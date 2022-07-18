@@ -172,9 +172,14 @@ local     a9570efa9aab4f8862461d9415b9144880b9c72e8b267b2f04bb6f09f4dafad4
 local     feedback
 ```
 
-10. docker ignore
+10. 최적화 docker ignore
 - gitignore 과 비슷하게 ".dockerignore" 파일을 만든후 ignore할 폴더/파일을 지정
-  ex) node_modules
+  ex) 
+  ```text 
+  node_modules
+  Dockerfile
+  .git
+  ```
 
 
 ## 3일차 ( env & arg)
@@ -218,3 +223,228 @@ EXPOSE $PORT
 ```dockerfile
 docker build -t feedback-node:dev --build-arg DEFAULT_PORT=8000 .
 ```
+
+## 4일차 ( 네트워킹: (교차) 컨테이너 통신)
+
+ - 컨테이터 네트워크 : 다중 컨테이너는 동일한 네트워크에 존재할수 있다.
+ - 실제로 컨테이너 이름을 도메인, 즉 주소로 사용할 수 있다. --> 도커가 IP로 바꿔준다.
+   (local PC : locakhost = local host 머신 : host.docker.internal)
+   
+ - 네트워크 생성 : docker run 할때 volumn 처럼 자동으로 생성되지 않아, 미리 만들어야됨.
+> docker network create favorite-net
+ 
+ - 네트워크 설정 : --network {network 이름}
+> docker run -it --network favorite-net node
+
+
+## 5일차 ( Docker로 다중 컨테이너 애플리케이션 구축 )
+
+![DOCKER](./docker_03.jpg)
+
+ ### 목표
+ - Data(mongo db)
+    - data유지
+    - access 제한
+ - Back(node)
+    - log data 유지
+    - live source code update
+ - Front(react)
+    - live source code update
+    
+
+ ### 실행
+
+ - Network 생성
+    ```dockerfile
+    docker network create goals-net
+    ```
+
+ - Data(mongo db) docker화
+   1. mongo container 화
+   ``` dockerfile
+   docker run --name mongodb --rm -d -p 27017:27017  mongo
+   ```
+    - network 설정
+   ```dockerfile
+    docker run --name mongodb --rm -d --network goals-net  mongo
+
+
+
+
+ - Back docker화 
+
+```node url 변경 ('mongodb://{docker container 이름}:27017/course-goals',
+'mongodb://mongodb:27017/course-goals',
+```
+1.docker 파일만들기
+```dockerfile
+FROM node
+
+WORKDIR /app
+
+COPY package.json .
+
+RUN npm install
+
+COPY . .
+
+EXPOSE 80
+
+CMD ["node", "app.js"]
+
+```
+
+  2. docker image 만들기(build)
+
+```dockerfile
+docker build  -t goals-node .
+```
+
+ image 결과
+```
+REPOSITORY   TAG       IMAGE ID       CREATED         SIZE
+goals-node   latest    bb6b64c5bc4e   9 seconds ago   1.02GB
+mongo        latest    c8b57c4bf7e3   4 weeks ago     701MB
+```
+
+  3. docker container 화
+
+```dockerfile
+docker run --name goals-backend --rm -d -p 80:80  gloals_node
+CONNECTED TO MONGODB
+```
+
+```dockerfile
+docker run --name goals-backend --rm -d -p 80:80 --network goals-net  gloals_node
+CONNECTED TO MONGODB
+```
+---
+ - Front(react) docker화
+
+1.docker 파일만들기
+```dockerfile
+FROM node
+
+WORKDIR /app
+
+COPY package.json .
+
+RUN npm install
+
+COPY . .
+
+EXPOSE 3000
+
+CMD [ "npm", "start" ]
+```
+2. docker image 만들기(build)
+
+```dockerfile
+docker build -t goals-react .
+```
+
+image 결과
+```
+REPOSITORY   TAG       IMAGE ID       CREATED         SIZE
+goals-node   latest    bb6b64c5bc4e   9 seconds ago   1.02GB
+mongo        latest    c8b57c4bf7e3   4 weeks ago     701MB
+```
+
+3. docker container 화
+
+```dockerfile
+docker run --name goals-frontend --rm  -p 3000:3000 -it goals-react
+```
+
+
+
+---
+4. monogdb 데이터 지속성 추가
+ - 어떻게 named volume을 추가?
+   ``` dockerfile
+   docker run --name mongodb --rm -d -p 27017:27017  -v data:/data/db mongo
+   ```
+
+ - 참조 : https://hub.docker.com/_/mongo
+
+5. access 제어
+ - 환경변수 추가
+
+    - mongodb 추가
+   ``` dockerfile
+   docker run --name mongodb --rm -d -p 27017:27017  
+        -e MONGO_INITDB_ROOT_USERNAME=max 
+        -e MONGO_INITDB_ROOT_PASSWORD=secret 
+        -v data:/data/db mongo
+   ```
+   
+    - back 접근(환경변수 추가)
+
+    ```dockerfile
+    FROM node
+    
+    WORKDIR /app
+    
+    COPY package.json .
+    
+    RUN npm install
+    
+    COPY . .
+    
+    EXPOSE 80
+    
+    ENV MONGODB_USER=root   //default 값을 root 로 하고 docker run -e {key}={value} 로 넣어준다.
+    ENV MONGODB_PASSWORD=secret
+    
+    CMD ["node", "app.js"]
+
+    ```
+    ```dockerfile
+        docker run --name goals-backend --rm -d -p 80:80  
+        -e MONGODB_USER=max 
+        -e MONGODB_PASSWORD=secret 
+        gloals_node
+
+    ```
+
+    ```javascript
+      `mongodb://${process.env.MONGODB_USER}:${process.env.MONGODB_PASSWORD}:27017/course-goals?authSource=admin`,
+
+    ```     
+
+
+
+6. (바인드 마운트로) 라이브 소스코드 업데이트
+ - 1. data mount 및 volumne 지정
+```dockerfile
+docker run --name goals-backend --rm -d -p 80:80  
+    -v {절대경로}:/app  --> data mounts : 소스 복사
+    -v logs:/app/logs   --> named volumne : log 파일이 안날라가도록 named volumn지정
+    -v /app/node_modules --> 익명 volumne : npm install 시 설치된 모듈이 data mounts 로 엎어치지 않게 익명 volumn 으로 지정
+    gloals_node
+
+```
+
+ - 2. node
+    - package.json 수정
+    
+ ```json
+
+    "scripts" : {
+      "start" : "nodemon app.js"
+    }
+
+    "devDependencies" : {
+        "nodemon" : "^2.0.4"
+    }
+```
+```dockerfile
+    CMD ["npm", "start"]
+    
+```
+
+7. docker build 최적화
+ - .
+
+- window 에서 linux filesystem을 사용하는 방법
+> 참고 : https://devblogs.microsoft.com/commandline/access-linux-filesystems-in-windows-and-wsl-2/
